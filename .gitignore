@@ -1,0 +1,57 @@
+# ---- 构建 / 运行产物（全部可由脚本重建，不入版本控制）----
+
+# HLS 工程与导出的 IP
+#   命令行 run_hls.tcl  建在 sobel_accel/
+#   GUI 组件流程        建在 <工程根>/<组件名>/（默认 sobel_accel_comp/）
+sobel_accel/
+sobel_accel_comp/
+*_comp/
+src_hls/tb_paths.h          # run_hls.tcl 自动生成
+
+# Vitis workspace
+vitis_ws/
+
+# Vitis IDE 的工作区状态（打开 IDE 时自动生成）
+_ide/
+
+# Vitis 平台 / 应用组件（由 IDE 从 XSA 生成）
+sobel_app/
+sobel_app_component/
+sobel_platform/
+*.xsa
+
+# Vivado 工程（由 vivado/create_project.tcl 生成）
+vivado/sobel_system/
+vivado/sobel_system.*/
+vivado/.srcs/
+vivado/.Xil/
+
+# 本地编译产物（主机仿真用）
+build/
+*.o
+*.exe
+*.obj
+
+# 测试向量（由 sim/gen_vectors.py 生成）
+sim/vectors/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# HLS / Vivado 运行日志与临时状态
+logs/
+.Xil/
+*.jou
+*.log
+*.backup.jou
+*.backup.log
+*.str
+dfx_runtime.txt
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~
