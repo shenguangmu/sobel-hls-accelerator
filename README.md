@@ -26,9 +26,13 @@
 > 环境：Vitis / Vivado 2025.2。细节见 §7。
 
 ```bash
-git clone https://github.com/Dawnmistry/sobel-hls-accelerator.git
+git clone git@github.com:shenguangmu/sobel-hls-accelerator.git
 cd sobel-hls-accelerator
 ```
+
+> 用 HTTPS 的话把首行换成
+> `git clone https://github.com/shenguangmu/sobel-hls-accelerator.git`。
+> 注意部分网络环境下 GitHub 的 443 端口不通，此时 SSH（22 端口）更稳。
 
 ---
 
