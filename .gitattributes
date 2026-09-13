@@ -1,0 +1,31 @@
+# 统一换行符约定
+#
+# 仓库内一律存 LF；检出到 Windows 时自动转 CRLF，方便用记事本等编辑器打开。
+# 显式声明这层约定，比依赖各人的 core.autocrlf 设置可靠 ——
+# 否则换个环境（不同 autocrlf、不同平台）检出结果就不一致。
+
+* text=auto eol=crlf
+
+# 源码与文档（按文本处理）
+*.c        text
+*.h        text
+*.cpp      text
+*.py       text
+*.md       text
+*.cfg      text
+*.xdc      text
+
+# Tcl 脚本由 Vivado / tclsh 读取，统一 CRLF
+*.tcl      text eol=crlf
+
+# 二进制资源：明确声明，避免被换行转换破坏
+# （本项目当前没有二进制文件，留给以后加图片/报告时用）
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.pdf      binary
+*.xsa      binary
+*.bit      binary
+*.dcp      binary
+*.zip      binary
