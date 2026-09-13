@@ -2,7 +2,7 @@
 
 用 **Vitis HLS** 在 **Zynq-7000** 上实现 Sobel 边缘检测加速器。
 接口为 **AXI4-Stream（数据）+ AXI4-Lite（控制）**，经 **AXI DMA**
-做 DDR→DDR 的整帧处理；附带裸机驱动、三层仿真平台与一键集成脚本。
+做 DDR→DDR 的整帧处理；附带裸机驱动、四层仿真平台与一键集成脚本。
 
 核心实现是**流式行缓存 + 3×3 窗口生成**，达成 **PIPELINE II=1**
 （每时钟 1 像素），纯整数运算，与 Python 参考模型逐位一致。
@@ -20,8 +20,9 @@
 | 吞吐 | 理论 100 Mpx/s（1080p ≈ 20.8 ms/帧） |
 
 - C 仿真 **TB PASSED**（8 组自一致性 + 6 组跨实现比对）
+- **C/RTL 协同仿真 PASS** —— 综合后的真实 RTL 与 C 结果逐位一致
 - 综合 → 实现 → 比特流全部跑通
-- **尚未做板级实测**（板卡未到）
+- **尚未做板级实测**（板卡未到；上板前的验证见 §3.6）
 
 > 环境：Vitis / Vivado 2025.2。细节见 §7。
 
@@ -120,7 +121,8 @@ sobel-hls-accelerator/
 │   ├── sobel_hls.cpp            核心：行缓存/窗口生成/Sobel/接口
 │   ├── sobel_hls.h              常量、寄存器定义、axis 类型
 │   ├── tb_sobel.cpp             C 仿真 testbench（两段式验证）
-│   └── run_hls.tcl              建工程 + csim + csynth + 导出 IP
+│   ├── run_hls.tcl              建工程 + csim + csynth + 导出 IP
+│   └── run_cosim.tcl            C/RTL 协同仿真（csim + csynth + cosim）
 ├── sim/                         仿真平台
 │   ├── gen_vectors.py           生成测试图 + Python golden 向量
 │   └── compare.py               输出比对 / 差异分析 / 出图
@@ -324,11 +326,31 @@ XPAR_AXI_DMA_0_BASEADDR                      // DMA
 
 ---
 
-### 无硬件也能复现的部分
+### 没有板子也能验证算法
 
-上板之前，下面三条在普通 PC 上就能跑，覆盖了绝大部分逻辑。
+从"完全没装工具链"到"用真实 RTL 跑通"，一共四层，按依赖顺序排。
+**前两层零依赖，后面依次需要更多工具。**
 
-**A. 算法正确性** —— HLS 的 C 代码本身就是普通 C++，可直接本地编译：
+| 层 | 验证什么 | 需要什么 | 耗时 |
+|---|---|---|---|
+| 1 | Python 参考模型自洽 | Python + NumPy | 秒级 |
+| 2 | 流式实现 vs 朴素实现 + 对 golden | C++ 编译器 | 秒级 |
+| 3 | 驱动逻辑（参数检查/地址运算/DMA 时序） | C 编译器 | 秒级 |
+| 4 | **综合后的真实 RTL 行为**（C/RTL 协同仿真） | Vitis HLS + Vivado | 几分钟 |
+
+---
+
+**第 1 层 —— Python 参考模型自检**
+
+确认"向量化实现"和"逐像素实现"两条独立路径结果一致：
+
+```bash
+python sim/compare.py            # 期望「全部一致」
+```
+
+**第 2 层 —— C 层算法验证**
+
+HLS 的 C 代码本身就是普通 C++，不需要任何 Xilinx 工具就能编译：
 
 ```bash
 # $VITIS 是你的 Vitis 安装路径，见 §3.0.1
@@ -337,13 +359,15 @@ g++ -std=c++17 -O2 -I src_hls -I "$VITIS/include" \
 ./build/tb            # 期望 TB PASSED
 ```
 
-**B. Python 参考模型自检**
+它会跑两段：**自一致性**（流式行缓存实现 vs 朴素逐像素实现，
+8 组含 1×1、1×32 等退化尺寸）+ **外部向量**（与 Python golden 逐位比对，6 组）。
 
-```bash
-python sim/compare.py            # 期望「全部一致」
-```
+> 需要 `ap_int.h` / `hls_stream.h` / `ap_axi_sdata.h`，都在
+> `<Vitis安装>/include/` 下。必须用 **C++17**（`ap_axiu` 用了 `if constexpr`）。
+> 若向量缺失，第二段自动跳过，仍会 PASS —— 但建议先跑第 1 层的
+> `python sim/gen_vectors.py` 生成它们，覆盖更全。
 
-**C. 驱动逻辑**（模拟 DMA，无需硬件）
+**第 3 层 —— 驱动逻辑（模拟 DMA）**
 
 ```bash
 gcc -DSOBEL_SIM_BUILD -I sw -o build/demo \
@@ -351,9 +375,40 @@ gcc -DSOBEL_SIM_BUILD -I sw -o build/demo \
 ./build/demo          # 期望三处边界检查都被拦截
 ```
 
-> A 需要 `ap_int.h` / `hls_stream.h` / `ap_axi_sdata.h`，
-> 都在 `<Vitis安装>/include/` 下。
-> 必须用 **C++17**，因为 `ap_axiu` 用了 `if constexpr`。
+**第 4 层 —— C/RTL 协同仿真（最接近上板）**
+
+前三层只验证 C 语义。**协同仿真会把综合出来的 Verilog 丢进 RTL 仿真器，
+逐拍驱动一遍，再和 C 侧结果比对** —— 流水线握手、反压、TLAST 位置
+这类只有硬件才暴露的问题，只有这一层能抓到。
+
+```bash
+# 先准备向量（协同仿真会读它们）
+python sim/gen_vectors.py
+
+# csim -> csynth -> cosim
+vitis-run --mode hls --tcl src_hls/run_cosim.tcl
+```
+
+**判据是这一行**（只看 `finished successfully` 不够）：
+
+```
+INFO: [COSIM 212-1000] *** C/RTL co-simulation finished: PASS ***
+```
+
+日志里应该还能看到 `向量目录 = <绝对路径>` 且 `hw vs python : PASS` 出现多次
+（每阶段 6 组）。若出现「全部缺失」，说明向量没生成或没找到。
+
+> **协同仿真的两个坑**（都实测踩过）：
+>
+> 1. **testbench 不能多线程。** 向量生成阶段会把"空流被读取"判为致命错误
+>    （`an hls::stream is read while empty, which may result in RTL
+>    simulation hanging`）。本项目因此把 testbench 改成先灌完输入再收输出
+>    的单线程写法 —— `hls::stream` 在 C 仿真里是无界队列，不会死锁。
+>    加 `-DALLOW_EMPTY_HLS_STREAM_READS` 不是解法：它让读变成非阻塞，
+>    反而会算错。
+> 2. **向量目录必须绝对化。** cosim 的工作目录在很深的构建路径下，
+>    相对路径找不到向量。`run_cosim.tcl` 会自动生成 `src_hls/tb_paths.h`
+>    注入绝对路径。
 
 ---
 
@@ -367,6 +422,7 @@ gcc -DSOBEL_SIM_BUILD -I sw -o build/demo \
 | `does not have TLAST port` | 用了裸 `hls::stream<ap_uint<8>>` | 换 `ap_axiu<8,0,0,0>`，见 §9.6 |
 | `Arguments ... cannot be empty` | 某引脚不存在，多为 PS7 被 board preset 重置 | 见 §9.7 |
 | `read_ip` 找不到文件 | `export_design` 产出的不是 `.xci` | 用 `ip_repo_paths` 注册，见 §9.8 |
+| cosim 报 `hls::stream is read while empty` | testbench 用了多线程 | 改单线程，见 §6 |
 | 板上结果随机错 | cache 没同步 | `sobel_run` 已封装，见 §5 |
 
 ---
@@ -557,21 +613,30 @@ gcc -DSOBEL_SIM_BUILD -I sw -o demo \
 
 ## 6. 仿真平台
 
-三层验证，互相独立：
+四层验证，逐层增强，互相独立：
 
-| 层 | 手段 | 验证什么 | 命令 |
-|---|---|---|---|
-| 1 | HLS `csim` | 流式实现 vs 朴素实现（8 组自洽）+ Python golden（6 组跨实现） | `run_hls.tcl` |
-| 2 | Python | 向量化 vs 逐像素实现 | `python sim/compare.py` |
-| 3 | 驱动主机仿真 | 参数检查/地址运算/DMA 调用顺序 | `-DSOBEL_SIM_BUILD` |
+| 层 | 手段 | 验证什么 | 命令 | 需要 |
+|---|---|---|---|---|
+| 1 | Python | 向量化 vs 逐像素实现 | `python sim/compare.py` | Python+NumPy |
+| 2 | HLS `csim` | 流式实现 vs 朴素实现（8 组自洽）+ Python golden（6 组跨实现） | `run_hls.tcl` | C++ 编译器 |
+| 3 | 驱动主机仿真 | 参数检查/地址运算/DMA 调用顺序 | `-DSOBEL_SIM_BUILD` | C 编译器 |
+| 4 | **C/RTL 协同仿真** | **综合后 RTL 的时序行为** | `run_cosim.tcl` | Vitis HLS + Vivado |
 
-**第 1 层**的 testbench 分两段。第一段拿伪随机图和几何图比较
+第 4 层最接近真实硬件：把生成的 Verilog 丢进 XSIM，逐拍驱动一遍再和 C 侧比对。
+**上板前能做的验证，它基本做到头了。** 详见 §3.6。
+
+### testbench 的设计
+
+第 2 层的 testbench 分两段。第一段拿伪随机图和几何图比较
 `sobel_accel()`（流式行缓存实现）与 `sobel_ref_sw()`（朴素逐像素实现），
 两者循环结构完全不同，任何 off-by-one 都会暴露；第二段再和 Python golden
 比，抓"C 和 Python 同时写错同一个约定"的情况。
 
-testbench 用**双线程**：生产者线程灌输入，主线程收输出。
-单线程会死锁 —— 输入流写满后卡住，而设计又因输出流满不能继续消费。
+**testbench 必须单线程**（先灌完输入再收输出）。早先用的是生产者/消费者
+双线程模型，在 csim 下没问题，但**协同仿真会直接拒绝**：它的向量生成阶段把
+"空流被读取"判为致命错误。加上 `hls::stream` 在 C 仿真里是无界队列
+（实测 640×480 时最大深度 307200 = 一帧全部像素），单线程不会死锁，
+只是内存占用变成 2× 帧大小。
 
 实测结果：
 
@@ -588,6 +653,12 @@ testbench 用**双线程**：生产者线程灌输入，主线程收输出。
 [2] 外部向量：流式实现 vs Python golden
   [gradient]/[checker]/[shapes]/[ramp]/[noise]/[odd]  全部 PASS
   TB PASSED
+```
+
+协同仿真的结论行（`run_cosim.tcl` 跑出来的）：
+
+```
+INFO: [COSIM 212-1000] *** C/RTL co-simulation finished: PASS ***
 ```
 
 比对单份输出（比如板上回传的）：

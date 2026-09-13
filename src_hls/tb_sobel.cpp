@@ -2,14 +2,9 @@
  * @file    tb_sobel.cpp
  * @brief   Sobel 加速器的 C 仿真 testbench
  *
- * 顶层是 hls::stream 接口，所以 testbench 用两个线程：
- *   生产者线程 -> 往 in 流里灌输入像素（阻塞写，满则等）
- *   主线程     -> 从 out 流里收 width*height 个输出像素（阻塞读，空则等）
- *
- * 为什么必须双线程:
- *   sobel_accel 的读和写在同一级流水里。如果单线程先把输入全灌进去，
- *   输入流（默认深度很小）会满、写操作卡住，而设计又因为输出流满了
- *   不能继续消费输入 —— 死锁。分线程后两个方向可以并行推进。
+ * 顶层是 hls::stream 接口：先把 width*height 个输入像素灌进 in 流，
+ * 再从 out 流里收同样多个输出像素。单线程，原因见 run_hw() 的注释
+ * （要点：C/RTL 协同仿真禁止"空流读取"，并发模型会被它判为致命错误）。
  *
  * 两段式验证（与旧版一致）:
  *   [1] 自一致性 —— sobel_accel（流式）vs sobel_ref_sw（朴素逐像素）
@@ -23,9 +18,17 @@
 #include <vector>
 #include <fstream>
 #include <iostream>
-#include <thread>
 
 #include "sobel_hls.h"
+
+/* tb_paths.h 由 run_hls.tcl / run_cosim.tcl 生成，
+ * 里面是向量目录的绝对路径（TB_VEC_DIR_DEFAULT）。
+ * 用 __has_include 保护 —— 手动编译、没生成该文件时也不会报错。 */
+#if defined(__has_include)
+#  if __has_include("tb_paths.h")
+#    include "tb_paths.h"
+#  endif
+#endif
 
 /* sobel_hls.cpp 里定义的仿真专用参考实现 */
 #ifndef __SYNTHESIS__
@@ -45,7 +48,24 @@ static std::vector<ap_uint<8> > g_sw;
 /**
  * @brief 把 g_in 的 width*height 个像素喂给 sobel_accel，收齐输出到 g_hw
  *
- * 用独立线程发送输入，避免与输出消费互相阻塞。
+ * 先灌完输入、再收输出 —— 单线程，且**不能改成并发**。
+ *
+ * 为什么不能用生产者/消费者双线程:
+ *   C/RTL 协同仿真（cosim_design）在生成测试向量那一阶段，
+ *   会把"空流被读取"判为致命错误：
+ *     ERROR [HLS SIM]: an hls::stream is read while empty,
+ *                      which may result in RTL simulation hanging.
+ *   并发模型下这个窗口几乎必然出现，cosim 直接中止。
+ *   （加 -DALLOW_EMPTY_HLS_STREAM_READS 会把它降级成警告，
+ *     但那会让读变成非阻塞，双线程模型反而算错，本文件试过。）
+ *
+ * 为什么单线程不会死锁:
+ *   hls::stream 在 C 仿真里是**无界队列**（实测 640x480 时
+ *   "maximum depth reached ... is 307200" = 一帧全部像素）。
+ *   所以先把输入灌完不会阻塞；随后 sobel_accel 消费输入、
+ *   产出输出，输出同样进无界队列，也就不存在背压死锁。
+ *
+ * 代价：内存占用 = 2 x 帧大小，对大图（如 1080p）约 4 MB，可接受。
  */
 static void run_hw(int w, int h, int thresh, int gain)
 {
@@ -56,16 +76,14 @@ static void run_hw(int w, int h, int thresh, int gain)
 
     g_hw.assign(n, 0);
 
-    std::thread producer([&]() {
-        for (size_t i = 0; i < n; i++) {
-            axis_word_t w;
-            w.data = g_in[i];
-            w.keep = 1;
-            w.strb = 1;
-            w.last = 0;          /* 输入侧 TLAST 对本设计无意义 */
-            s_in.write(w);
-        }
-    });
+    for (size_t i = 0; i < n; i++) {
+        axis_word_t wd;
+        wd.data = g_in[i];
+        wd.keep = 1;
+        wd.strb = 1;
+        wd.last = 0;         /* 输入侧 TLAST 对本设计无意义 */
+        s_in.write(wd);
+    }
 
     sobel_accel(s_in, s_out, w, h, thresh, gain);
 
@@ -73,9 +91,9 @@ static void run_hw(int w, int h, int thresh, int gain)
      * 顺带校验 TLAST：只应出现在最后一个像素上。 */
     int tlast_count = 0;
     for (size_t i = 0; i < n; i++) {
-        axis_word_t w = s_out.read();
-        g_hw[i] = w.data;
-        if (w.last) {
+        axis_word_t wd = s_out.read();
+        g_hw[i] = wd.data;
+        if (wd.last) {
             tlast_count++;
             if (i != n - 1) {
                 std::cout << "    [警告] TLAST 出现在第 " << i
@@ -87,8 +105,6 @@ static void run_hw(int w, int h, int thresh, int gain)
         std::cout << "    [警告] TLAST 数量 = " << tlast_count
                   << "（应为 1）\n";
     }
-
-    producer.join();
 }
 
 /* ------------------------------------------------------------------ *

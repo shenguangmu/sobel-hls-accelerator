@@ -1,6 +1,11 @@
 # ---- 构建 / 运行产物（全部可由脚本重建，不入版本控制）----
 
 # HLS 工程与导出的 IP
+#   （另：某些 tcl 调用方式会在根目录留下 hls.app / solution1 / sobel_cosim）
+hls.app
+solution1/
+sobel_cosim/
+cosim_proj/
 #   命令行 run_hls.tcl  建在 sobel_accel/
 #   GUI 组件流程        建在 <工程根>/<组件名>/（默认 sobel_accel_comp/）
 sobel_accel/

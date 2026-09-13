@@ -217,6 +217,29 @@ Vitis 2025.2 **取消了独立的 Vitis HLS 图形界面**。HLS 现在是统一
 | DSP | 1 |
 | BRAM_18K | 3 |
 
+### 1.6b 跑 C/RTL 协同仿真（没有板子也能验证 RTL）
+
+这一步可选，但**强烈建议做** —— 它把综合出来的 Verilog 丢进 RTL 仿真器
+逐拍跑一遍，再和 C 侧结果比对。流水线握手、反压、TLAST 位置这类
+只有硬件才暴露的问题，只有它能抓到。
+
+在 `HLS` 节点下右键 **`C/RTL Co-simulation`** → **`Run`**
+（有些版本叫 `Co-Simulation`）。
+
+**判据是这一行**（只看 `finished successfully` 不够）：
+
+```
+INFO: [COSIM 212-1000] *** C/RTL co-simulation finished: PASS ***
+```
+
+> **前置条件**：先按 §0.1 生成测试向量，否则外部向量那 6 组会被跳过
+> （仍会 PASS，但覆盖变弱）。日志里搜
+> `hw vs python : PASS` 应有多次出现；若出现「全部缺失」就是没读到向量。
+
+> **本项目的 testbench 已改成单线程写法**，就是为了兼容这一步 ——
+> 协同仿真的向量生成阶段会把"空流被读取"判为致命错误，并发模型过不了。
+> 如果你改了 testbench，注意别改回多线程。
+
 ### 1.7 导出 IP（关键一步）
 
 在 `HLS` 节点下右键 **`Package`**（有些版本叫 `Export` / `Package IP`）→ **`Run`**。
@@ -651,6 +674,7 @@ csim.profile_tripcount=1
 | 生成向量 | `python sim/gen_vectors.py` | **无对应按钮，仍需命令行** |
 | HLS 综合 | `vitis-run --mode hls --tcl src_hls/run_hls.tcl` | Vision IDE → HLS Component |
 | C 仿真 | 同上（含 csim） | 右键 `C Simulation > Run` |
+| C/RTL 协同仿真 | `vitis-run --mode hls --tcl src_hls/run_cosim.tcl` | 右键 `C/RTL Co-simulation > Run` |
 | 导出 IP | 同上（含 export） | 右键 `Package > Run` |
 | 建 Vivado 工程 | `vivado -mode batch -source vivado/create_project.tcl` | `File > Project > New` 向导 |
 | Block Design | `vivado/bd_sobel.tcl` | 画布上手动拖 |
